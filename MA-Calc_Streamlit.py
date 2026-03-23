@@ -1,6 +1,6 @@
 import streamlit as st
 import yfinance as yf
-import pandas as pd
+import time
 
 st.set_page_config(page_title="DCA Dashboard", layout="centered")
 
@@ -9,98 +9,120 @@ st.title("📊 Market DCA Dashboard")
 # ========= 输入 =========
 ticker_symbol = st.text_input("Ticker", "VOO")
 
+# ========= 数据获取（带cache + 重试） =========
+@st.cache_data(ttl=300)
+def fetch_data(ticker):
+    for _ in range(3):
+        df = yf.download(ticker, period="5y", interval="1d")
+        if df is not None and not df.empty:
+            return df
+        time.sleep(1)
+    return None
+
 run = st.button("Run Analysis")
 
 if run:
 
-    # ========= 下载数据 =========
-    df = yf.download(ticker_symbol, period="5y", interval="1d")
-    close = df['Close'].squeeze()
+    with st.spinner("Fetching market data..."):
 
-    # ========= 计算均线 =========
-    ma50 = float(close.rolling(50).mean().iloc[-1])
-    ma200 = float(close.rolling(200).mean().iloc[-1])
-    current_price = float(close.iloc[-1])
+        df = fetch_data(ticker_symbol)
 
-    # ========= 计算回撤 =========
-    rolling_max = close.cummax()
-    dd_pct = abs(float(((close - rolling_max) / rolling_max).iloc[-1]))
+        if df is None or 'Close' not in df:
+            st.error("❌ Failed to fetch data. Try again.")
+            st.stop()
 
-    # ========= 趋势 =========
-    above_200 = current_price > ma200
-    death_cross = ma50 < ma200
+        close = df['Close'].squeeze()
 
-    # ========= DCA =========
-    base_dca = 2000
+        if len(close) < 200:
+            st.error("❌ Not enough data for MA200.")
+            st.stop()
 
-    if dd_pct < 0.05:
-        extra = 0
-    elif dd_pct < 0.10:
-        extra = 500
-    elif dd_pct < 0.15:
-        extra = 1000
-    elif dd_pct < 0.20:
-        extra = 2000
-    else:
-        extra = 3000
+        # ========= MA =========
+        ma50 = float(close.rolling(50).mean().iloc[-1])
+        ma200 = float(close.rolling(200).mean().iloc[-1])
+        price = float(close.iloc[-1])
 
-    # ========= VIX =========
-    vix_data = yf.download("^VIX", period="5d", interval="1d")
-    vix = round(float(vix_data['Close'].squeeze().iloc[-1]), 2)
+        # ========= 回撤 =========
+        rolling_max = close.cummax()
+        dd_pct = abs(float(((close - rolling_max) / rolling_max).iloc[-1]))
 
-    if vix < 15:
-        vix_factor = 0.8
-    elif vix < 20:
-        vix_factor = 1.0
-    elif vix < 30:
-        vix_factor = 1.2
-    else:
-        vix_factor = 1.5
+        # ========= 趋势 =========
+        above_200 = price > ma200
+        death_cross = ma50 < ma200
 
-    extra *= vix_factor
+        # ========= VIX =========
+        vix_df = fetch_data("^VIX")
 
-    if not above_200:
-        extra *= 0.7
+        if vix_df is None:
+            st.warning("⚠️ VIX unavailable")
+            vix = 20
+        else:
+            vix = round(float(vix_df['Close'].squeeze().iloc[-1]), 2)
 
-    dca = int(base_dca + extra)
+        # ========= DCA =========
+        base = 2000
 
-    # ========= 市场状态 =========
-    if dd_pct < 0.05:
-        market_state = "🟢 Healthy"
-    elif dd_pct < 0.10:
-        market_state = "🟡 Pullback"
-    elif dd_pct < 0.15:
-        market_state = "🟠 Correction"
-    else:
-        market_state = "🔴 Deep Drawdown"
+        if dd_pct < 0.05:
+            extra = 0
+        elif dd_pct < 0.10:
+            extra = 500
+        elif dd_pct < 0.15:
+            extra = 1000
+        elif dd_pct < 0.20:
+            extra = 2000
+        else:
+            extra = 3000
 
-    if not above_200:
-        market_state += " (Below 200MA)"
+        # VIX 调整
+        if vix < 15:
+            extra *= 0.8
+        elif vix < 20:
+            extra *= 1.0
+        elif vix < 30:
+            extra *= 1.2
+        else:
+            extra *= 1.5
 
-    if death_cross:
-        market_state += " ⚠️ Death Cross"
+        # MA 调整
+        if not above_200:
+            extra *= 0.7
 
-    # ========= 输出 =========
+        dca = int(base + extra)
+
+        # ========= 状态灯 =========
+        if dd_pct < 0.05:
+            state = "🟢 Normal"
+        elif dd_pct < 0.10:
+            state = "🟡 Add Slowly"
+        elif dd_pct < 0.15:
+            state = "🟠 Good Opportunity"
+        else:
+            state = "🔴 Strong Buy Zone"
+
+        if not above_200:
+            state += " (Trend Weak)"
+
+        if death_cross:
+            state += " ⚠️"
+
+    # ========= UI =========
     st.divider()
 
     st.subheader("📈 Market Overview")
     st.write(f"**Ticker:** {ticker_symbol}")
-    st.write(f"**Price:** {current_price:.2f}")
+    st.write(f"**Price:** {price:.2f}")
 
-    st.subheader("📊 Moving Averages")
+    st.subheader("📊 Indicators")
     st.write(f"MA50: {ma50:.2f}")
     st.write(f"MA200: {ma200:.2f}")
 
-    st.subheader("📉 Trend")
-    st.write(f"Above 200MA: {above_200}")
-    st.write(f"Death Cross: {death_cross}")
-
-    st.subheader("📉 Drawdown")
-    st.write(f"{-dd_pct*100:.2f}%")
-
-    st.subheader("🧠 Market State")
-    st.write(market_state)
+    st.subheader("📉 Market Condition")
+    st.write(f"Drawdown: {-dd_pct*100:.2f}%")
     st.write(f"VIX: {vix}")
+    st.write(state)
 
-    st.subheader("💰 DCA Suggestion")
+    st.subheader("💰 DCA Decision")
     st.success(f"${dca}")
+
+    # ========= 额外提示 =========
+    st.info("💡 Tip: Use DCA primarily to rebalance your portfolio.")
