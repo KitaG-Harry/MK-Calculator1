@@ -9,6 +9,8 @@ st.title("📊 Market DCA Dashboard")
 # ========= 输入 =========
 ticker_symbol = st.text_input("Ticker", "VOO")
 
+base = st.number_input("Base DCA Amount", value=2000)
+
 # ========= 数据获取（带cache + 重试） =========
 @st.cache_data(ttl=300)
 def fetch_data(ticker):
@@ -60,7 +62,6 @@ if run:
             vix = round(float(vix_df['Close'].squeeze().iloc[-1]), 2)
 
         # ========= DCA =========
-        base = 2000
 
         if dd_pct < 0.05:
             extra = 0
